@@ -6,6 +6,7 @@
 
 #include <ros/node_handle.h>
 #include <ros/publisher.h>
+#include <std_msgs/Int8.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/NavSatFix.h>
 #include <sensor_msgs/TimeReference.h>
@@ -50,9 +51,11 @@ protected:
     ros::Publisher stdNavSatFixPublisher;
     ros::Publisher stdTimeReferencePublisher;
     ros::Publisher stdInsPublisher;
+    ros::Publisher stdInsStatusPublisher;
     DiagnosticsPublisher diagPub;
 
     // Utils
+    int lastStatus;
     bool useInsAsTimeReference = true;
     bool useUnixAsTimeOrigin = true;
 };

@@ -7,7 +7,10 @@
 #include "ros_publisher.h"
 #include <ros/node_handle.h>
 
-ROSPublisher::ROSPublisher() : nh("~"), diagPub(nh)
+ROSPublisher::ROSPublisher() : 
+  nh("~"),
+  diagPub(nh),
+  lastStatus(-1)
 {
     nh.param("frame_id", frame_id, std::string("imu_link_ned"));
     nh.param("time_source", time_source, std::string("ins"));
@@ -54,6 +57,7 @@ ROSPublisher::ROSPublisher() : nh("~"), diagPub(nh)
     stdTimeReferencePublisher =
         nh.advertise<sensor_msgs::TimeReference>("standard/timereference", 1);
     stdInsPublisher = nh.advertise<ixblue_ins_msgs::Ins>("ix/ins", 1);
+    stdInsStatusPublisher = nh.advertise<std_msgs::Int8>("/ins/status",1, true);
 }
 
 void ROSPublisher::onNewStdBinData(
@@ -80,6 +84,38 @@ void ROSPublisher::onNewStdBinData(
     auto navsatfixMsg = toNavSatFixMsg(navData);
     auto iXinsMsg = toiXInsMsg(navData);
 
+    // Additional feature: publish a "INS state"
+    bool waitingForPosition = 1<<21 & navData.insSystemStatus.get().status2;
+    bool alignmentMode = 1<<27 & navData.insUserStatus.get().status;
+    bool insReady = 1<<29 & navData.insUserStatus.get().status;
+
+    int status;
+    if(waitingForPosition)
+    {
+        status = 0;
+    }
+    else if(alignmentMode)
+    {
+        status = 1;
+    }
+    else if(insReady)
+    {
+        status = 2;
+    }
+    else
+    {
+        status = -1;
+    }
+
+    // Publish if state changes changes
+    if(lastStatus != status)
+    {
+        lastStatus = status;
+        std_msgs::Int8 msg;
+        msg.data = status;
+        stdInsStatusPublisher.publish(msg);
+    }
+
     if(!useInsAsTimeReference)
     {
         auto timeReferenceMsg = toTimeReference(headerData);
@@ -91,13 +127,15 @@ void ROSPublisher::onNewStdBinData(
         }
     }
 
-    if(imuMsg)
+    // Added InsReady because we noticed that INS still publishes messages when it is not ready
+    if(imuMsg && insReady)
     {
         imuMsg->header = headerMsg;
         stdImuPublisher.publish(imuMsg);
         diagPub.stdImuTick(imuMsg->header.stamp);
     }
-    if(navsatfixMsg)
+    // Added waitingForPosition because we noticed that INS still publishes messages when it is not ready
+    if(navsatfixMsg && !waitingForPosition)
     {
         navsatfixMsg->header = headerMsg;
         stdNavSatFixPublisher.publish(navsatfixMsg);
@@ -296,10 +334,27 @@ ROSPublisher::toNavSatFixMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navDa
     // --- Initialisation
     sensor_msgs::NavSatFixPtr res = boost::make_shared<sensor_msgs::NavSatFix>();
 
+    // Fix Status
+    if(1<<1 & navData.insUserStatus.get().status)
+    {
+        // Unaugmented fix
+        res->status.status = 0;
+    }
+    else
+    {
+        // Unable to fix position
+        res->status.status = -1;
+    }
+
     // --- Position
     res->latitude = navData.position.get().latitude_deg;
     res->longitude = navData.position.get().longitude_deg;
     res->altitude = navData.position.get().altitude_m;
+
+    // Range must adhere to ROS NavSatFix msg (-180 ~ 180)
+    // Source: http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/NavSatFix.html
+    if(res->longitude > 180)
+        res->longitude -= 360;
 
     // --- Position SD
     if(navData.positionDeviation.is_initialized() == false)
